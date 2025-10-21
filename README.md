@@ -55,3 +55,13 @@
 #### Note: 
 > CSV Files --> PostgreSQL\
 > JSON Lines --> MongoDB
+
+
+## Application Functions
+- **Open Account**: create a new account for a customer with status open and balance 0.
+- **Deposit**: add money to an account. Append a transaction row and update the account balance inside one unit of work.
+- **Withdraw**: take money out if funds plus overdraft allow it. Append a transaction row and update the balance in one unit of work.
+- **Transfer**: move money between two accounts or to a verified merchant. Before completing the transfer, the system validates that the sender’s account has sufficient funds, the receiver or merchant exists, and that the merchant (if involved) is active. If valid, it creates two transaction rows (a debit and a credit) with the same transfer_id, commits them together as one atomic operation, and rejects duplicates by transfer_id.
+- **Get Balance**: read the current account balance.
+- **View Recent Transactions**: read the last N transactions for an account, ordered by timestamp descending.
+- **Close/Freeze Account**: change status to closed or frozen. Do not delete rows. You want an audit trail.
