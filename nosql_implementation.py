@@ -189,14 +189,26 @@ def loadSampleData(db, folderDir):
 # -------------------------------------------------------------------------------------------------
 
 
-def openAccount(db):
+def openAccount(db, accountId=None):
     """
     Opens a new account for a customer for a random customer from
-    the Customers collection.
+    the Customers collection. Or reopens an existing account if accountId is provided.
     
     ::param db:: active database object
     """
     try:
+        # Reopen existing closed account
+        if accountId:
+            account = db.Accounts.find_one({'_id': accountId, 'status': 'closed'})
+            if account:
+                db.Accounts.update_one({'_id': accountId}, {'$set': {'status': 'open', 'update_date': datetime.now(UTC)}})
+                print(f"Account reopened successfully: {accountId}")
+                return
+            else:
+                print(f"No closed account found for account ID {accountId}.")
+                return
+
+        # Open new account
         customer = db.Customers.aggregate([{'$sample': {'size': 1}}]).next()
         newAccountId = db.Accounts.estimated_document_count() + 1
         accountInfo = {
@@ -204,7 +216,7 @@ def openAccount(db):
             'customer_id': customer['_id'],
             'balance': 0,
             'overdraft_limit': 0,
-            'status': 'active',
+            'status': 'open',
             'creation_date': datetime.now(UTC),
             'update_date': datetime.now(UTC)
         }
@@ -398,18 +410,84 @@ def transfer(db, fromAccId, toAccId, amount, merchantId=None, note=None, channel
         print(f"Error transferring money: {e}")
 
 
-def getBalance(db, customerId):
-    # TODO
-    return None
+def getBalance(db, accountId, customerId):
+    """
+    Retrieves the account balance for a given customer.
 
-def viewRecentTransactions(db, customerId):
-    # TODO
-    return None
+    ::param db:: active database object
+    ::param accountId:: the _id of the account to retrieve the balance for
+    ::param customerId:: the customer_id of the account owner
+    """
+    try:
+        account = db.Accounts.find_one({'_id': accountId, 'customer_id': customerId})
+        if account:
+            print(f"Account ID {accountId}'s Balance: {account['balance']}")
+        else:
+            print(f"No active account found for account ID {accountId} and customer ID {customerId}.")
+    
+    except Exception as e:
+        print(f"Error retrieving balance: {e}")
 
 
-def closeAccount(db, customerId):
-    # TODO
-    return None
+
+
+def viewRecentTransactions(db, accountId):
+    """
+    Retrieves recent transactions for a given account.
+
+    ::param db:: active database object
+    ::param accountId:: the _id of the account to retrieve transactions for
+    """
+    try:
+        transactions = list(db.Transactions.find({'account_id': accountId}).sort('timestamp', -1).limit(10))
+        
+        if not transactions:
+            print(f"\n=== No transactions found for Account ID {accountId} ===\n")
+            return
+
+        print(f"\n{'-'*110}")
+        print(f"Recent Transactions for Account ID {accountId}")
+        print(f"{'-'*110}")
+        print(f"{'ID':<12} {'Amount':<12} {'Type':<18} {'Timestamp':<27} {'Note':<20} {'Channel':<10}")
+        print(f"{'-'*110}")
+        
+        for txn in transactions:
+            transferId = txn['_id']
+            amount = f"${txn['amount']/100:,.2f}" if txn.get('amount') is not None else '$0.00'
+            timestamp = txn['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if txn.get('timestamp') else 'N/A'
+            type = txn.get('type') or 'N/A'
+            note = str(txn.get('note')) if txn.get('note') is not None else 'N/A'
+            channel = txn.get('channel') or 'N/A'
+
+            print(f"{transferId:<12} {amount:<12} {type:<18} {timestamp:<27} {note:<20} {channel:<10}")
+
+        print(f"{'-'*110}\n")
+
+    except Exception as e:
+        print(f"Error retrieving recent transactions: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+
+
+
+def closeAccount(db, accountId, customerId):
+    """
+    Closes a specific account for given user.
+
+    ::param db:: active database object
+    ::param accountId:: the _id of the account to close
+    ::param customerId:: the customer_id of the account owner
+    """
+    try:
+        result = db.Accounts.update_one({'_id': accountId, 'customer_id': customerId}, {'$set': {'status': 'closed'}})
+        if result.modified_count > 0:
+            print(f"Account {accountId} closed successfully.")
+        else:
+            print(f"Account {accountId} not found or already closed.")
+    except Exception as e:
+        print(f"Error closing account {accountId}: {e}")
 
 
 
@@ -488,11 +566,11 @@ def verifyData(db):
     print("\n=== DATABASE VERIFICATION ===\n")
     
     # Accounts
-    # account_count = db.Accounts.count_documents({})
-    # print(f"Total Accounts: {account_count}")
-    # if account_count > 0:
-    #     sample_account = db.Accounts.find_one()
-    #     print(f"Sample Account: {sample_account}\n")
+    account_count = db.Accounts.count_documents({})
+    print(f"Total Accounts: {account_count}")
+    if account_count > 0:
+        sample_account = db.Accounts.find_one()
+        print(f"Sample Account: {sample_account}\n")
     
     # Transactions
     transaction_count = db.Transactions.count_documents({})
@@ -501,20 +579,20 @@ def verifyData(db):
         sample_transaction = db.Transactions.find_one()
         print(f"Sample Transaction: {sample_transaction}\n")
     
-    
+
     # Customers
-    # customer_count = db.Customers.count_documents({})
-    # print(f"Total Customers: {customer_count}")
-    # if customer_count > 0:
-    #     sample_customer = db.Customers.find_one()
-    #     print(f"Sample Customer: {sample_customer}\n")
+    customer_count = db.Customers.count_documents({})
+    print(f"Total Customers: {customer_count}")
+    if customer_count > 0:
+        sample_customer = db.Customers.find_one()
+        print(f"Sample Customer: {sample_customer}\n")
     
     # Merchants
-    # merchant_count = db.Merchants.count_documents({})
-    # print(f"Total Merchants: {merchant_count}")
-    # if merchant_count > 0:
-    #     sample_merchant = db.Merchants.find_one()
-    #     print(f"Sample Merchant: {sample_merchant}\n")
+    merchant_count = db.Merchants.count_documents({})
+    print(f"Total Merchants: {merchant_count}")
+    if merchant_count > 0:
+        sample_merchant = db.Merchants.find_one()
+        print(f"Sample Merchant: {sample_merchant}\n")
     
     print("=== END VERIFICATION ===\n")
 
@@ -540,17 +618,27 @@ def main():
     # transfer(db, fromAccId=10000007, toAccId=10000008, amount=5000, merchantId=1003, note='rent', channel='online')
     
 
+    # getBalance(db, accountId=10000003, customerId=1016942)
+    # getBalance(db, accountId=10000007, customerId=1007807)
+    # getBalance(db, accountId=10000001, customerId=1003433)
+    # getBalance(db, accountId=10000002, customerId=1027482)
 
 
+    # viewRecentTransactions(db, accountId=10000003)
+    # viewRecentTransactions(db, accountId=10000007)
+    # viewRecentTransactions(db, accountId=10000001)
+    # viewRecentTransactions(db, accountId=10000002)
 
 
+    # closeAccount(db, accountId=10000003, customerId=1016942)
+    # openAccount(db, accountId=10000003)
 
 
     # View recently added accounts
     # listRecentAccounts(db, limit=5)
     
     # Verify data was loaded successfully
-    verifyData(db)
+    # verifyData(db)
     
     # Run query examples
     # queryExamples(db)
