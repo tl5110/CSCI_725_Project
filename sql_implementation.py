@@ -1,19 +1,36 @@
-import psycopg as psql
+import mysql.connector
 
 
 
 def connectToDB():
     """
     Establishes a connection to the PostgreSQL database
-
     ::return:: active database connection object if successful, None otherwise
     """
     try:
-        conn = psql.connect(
-            dbname = "CSCI_725_Project",
-            host = "127.0.0.1",
+
+        ##DATA BASE CONNECTION SET UP####
+        mydb = mysql.connector.connect(
+            host="localhost", 
+            user="root",
+            password="MYsql990001161",
+            database="CSCI_725_Project"  
         )
-        return conn
-    except psql.Error:
-        conn = None
-        return conn
+
+        
+        return mydb #Connection successful
+        
+    except mysql.connector.Error as err:
+        if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:
+            print("Wrong Username or Password")
+        else:
+            print(err)
+
+    
+def main():
+    print("test")
+    conn = connectToDB()
+
+
+main()
+    
