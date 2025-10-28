@@ -1,37 +1,76 @@
-import mysql.connector
 
+import pandas as pd
+import psycopg as psql
 
 
 def connectToDB():
     """
     Establishes a connection to the PostgreSQL database
+
     ::return:: active database connection object if successful, None otherwise
     """
     try:
-
-        ##DATA BASE CONNECTION SET UP####
-        mydb = mysql.connector.connect(
-            host="localhost", 
-            user="root",
+        conn = psql.connect(
+            dbname = "CSCI_725_Project",
+            host = "127.0.0.1",
+            user="root", 
             password="MYsql990001161",
-            database="CSCI_725_Project"  
         )
+        print("connection success!!!!!")
+        return conn
+    except psql.Error:
+        conn = None
+        return conn
 
-        
-        return mydb #Connection successful
-        
-    except mysql.connector.Error as err:
-        if err.errno == mysql.connector.errorcode.ER_ACCESS_DENIED_ERROR:
-            print("Wrong Username or Password")
-        else:
-            print(err)
 
 
 ############## READ IN DATA ##############
-def readData():
+def loadData(conn):
     """
     Read in the data
     """
+
+    #Account files 
+    account_files = {
+        "banking_datasets/baseline/baseline_accounts.csv",
+        "banking_datasets/edgecases/edgecases_accounts.csv",
+        "banking_datasets/hotspot/hotspot_accounts.csv",
+        "banking_datasets/payday/payday_accounts.csv",
+    }
+
+    for file in account_files: 
+        read = pd.read_csv(file,skiprows=1,usecols=[0,1,2,3,4,5,6,7])
+
+ 
+    # file = pd.read_csv(TrafficFile,skiprows=1, usecols=[0,1])
+    # for row in file.itertuples(index=False): 
+        
+   
+    #customer files 
+
+    #read in the merchant files and load them into the db 
+    merchant_files = {
+        "banking_datasets/baseline/baseline_merchants.csv",
+        "banking_datasets/edgecases/edgecases_merchants.csv",
+        "banking_datasets/hotspot/hotspot_merchants.csv",
+        "banking_datasets/payday/payday_merchants.csv",
+    }
+
+    for file in merchant_files: 
+        read = pd.read_csv(file,skiprows=1,usecols=[0,1,2])
+        for row in read.itertuples(index=False): 
+            id = row[0]
+            name = row[1]
+            category = row[2]
+
+            
+
+
+
+    #transaction files
+
+
+
 
 
 
@@ -79,7 +118,8 @@ def closeAccount():
 ############## BANK FUNCTIONS ############## 
 def main():
     print("test")
-    conn = connectToDB()
+    test = connectToDB()
+   
 
 
 main()
