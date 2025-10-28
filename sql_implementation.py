@@ -38,8 +38,8 @@ def loadData(conn):
         "banking_datasets/payday/payday_accounts.csv",
     }
 
-    for file in account_files: 
-        read = pd.read_csv(file,skiprows=1,usecols=[0,1,2,3,4,5,6,7])
+    # for file in account_files: 
+    #     read = pd.read_csv(file,skiprows=1,usecols=[0,1,2,3,4,5,6,7])
 
  
     # file = pd.read_csv(TrafficFile,skiprows=1, usecols=[0,1])
@@ -55,18 +55,25 @@ def loadData(conn):
         "banking_datasets/hotspot/hotspot_merchants.csv",
         "banking_datasets/payday/payday_merchants.csv",
     }
+    with conn.cursor() as cur:
+        for file in merchant_files: 
+            read = pd.read_csv(file,skiprows=1,usecols=[0,1,2])
+            for row in read.itertuples(index=False): 
+                merchant_id = row[0]
+                name = row[1]
+                category = row[2]
 
-    for file in merchant_files: 
-        read = pd.read_csv(file,skiprows=1,usecols=[0,1,2])
-        for row in read.itertuples(index=False): 
-            id = row[0]
-            name = row[1]
-            category = row[2]
+                sql = """
+                        INSERT INTO merchant (merchant_id, name, category)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (merchant_id) DO NOTHING;
+                    """
+                cur.execute(sql, (merchant_id, name, category))
+        
+        conn.commit()
+        print("Merchant data loaded")
 
             
-
-
-
     #transaction files
 
 
@@ -118,8 +125,15 @@ def closeAccount():
 ############## BANK FUNCTIONS ############## 
 def main():
     print("test")
-    test = connectToDB()
-   
+    conn = connectToDB()
+    
+    #Testing connection 
+    if conn is not None: 
+        loadData(conn)     
+        conn.close()       
+    else:
+        print("Failed to connect to the database.")
+    
 
 
 main()
