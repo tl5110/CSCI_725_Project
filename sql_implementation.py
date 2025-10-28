@@ -153,6 +153,97 @@ def loadData(conn):
         conn.commit()
         print("transaction data loaded")
 
+#NEED EXTRA TESTING 
+def createTable(conn):
+    """
+    Creates collections for banking application in the database
+
+    ::param db:: active database object
+    """ 
+    with conn.cursor() as cur:
+        customer_table_sql = """
+                create table customer
+                (
+                    customer_id   integer not null
+                        primary key,
+                    name          varchar,
+                    email         varchar,
+                    phone_number  varchar,
+                    creation_date varchar
+                );
+            """
+        cur.execute(customer_table_sql)
+        
+        merchant_table_sql = """
+                create table merchant
+                (
+                    merchant_id integer not null
+                        primary key,
+                    name        varchar,
+                    category    varchar
+                );
+            """
+        cur.execute(merchant_table_sql)
+
+
+        account_table_sql = """
+                    CREATE TABLE IF NOT EXISTS account (
+                        account_id      INTEGER PRIMARY KEY,
+                        customer_id     INTEGER REFERENCES customer(customer_id),
+                        open_date       VARCHAR,
+                        status          VARCHAR,
+                        balance         INTEGER,
+                        last_update     VARCHAR,
+                        overdraft_limit INTEGER
+                    );
+                """
+        cur.execute(account_table_sql)
+
+        transaction_table_sql = """
+                    create table transactions
+                    (
+                        transaction_id bigint not null
+                            primary key,
+                        account_id     bigint
+                            constraint transactions_account_fk
+                                references account,
+                        merchant_id    integer
+                            constraint transactions_merchant_fk
+                                references merchant,
+                        type           varchar,
+                        time_stamp     varchar,
+                        amount         bigint,
+                        channel        varchar,
+                        note           varchar,
+                        transfer_id    bigint
+                    );
+                """
+        cur.execute(transaction_table_sql)
+    
+    conn.commit()
+
+
+#EXTRA TESTING 
+def dropTables(conn):
+    """
+    Drops all tables for the banking application in the database
+    """
+    with conn.cursor() as cur:
+        # Drop tables that depend on others first
+        tables = [
+            "transactions",
+            "account",
+            "merchant",
+            "customer"
+        ]
+
+        for table in tables:
+            sql = f"DROP TABLE IF EXISTS {table} CASCADE;" #Cascade drops depend. 
+            cur.execute(sql)
+            
+
+    conn.commit()
+    print("All tables dropped")
 
 
 
@@ -163,10 +254,22 @@ def loadData(conn):
 
 ############## BANK FUNCTIONS ############## 
 
-def OpenAccount(conn):
+def OpenAccount(conn, customer_id, account_id = None):
     """
     create a new account for a customer with status open and balance 0.
     """
+    try:
+        
+        #Reopen account 
+
+        #New account 
+        sql = ""
+
+    except Exception as e:
+        print(f"Error closing account {account_id}: {e}")
+
+
+
    
  
 def Deposit():
@@ -174,29 +277,65 @@ def Deposit():
     add money to an account. Append a transaction row and update the account balance inside one unit of work.
     """
 
+
+
+
 def Withdraw():
     """
     take money out if funds plus overdraft allow it. Append a transaction row and update the balance in one unit of work.
     """
 
+
+
+
+
 def Transfer():
     """
     move money between two accounts or to a verified merchant. Before completing the transfer, the system validates that the sender’s account has sufficient funds, the receiver or merchant exists, and that the merchant (if involved) is active. If valid, it creates two transaction rows (a debit and a credit) with the same transfer_id, commits them together as one atomic operation, and rejects duplicates by transfer_id.
     """
-def getBalance():
+
+
+
+
+def getBalance(conn, accountId):
     """
     read the current account balance.
+    ::param db:: active database object
+    ::param accountId:: the _id of the account to retrieve the balance for
     """
+    try:
+        with conn.cursor() as cur:
+
+            sql = "SELECT balance FROM account WHERE account_id = %s"
+            cur.execute(sql, (accountId, ))
+            balance = cur.fetchone()
+            
+            if balance:
+                balance = balance[0]
+                print(f"Account ID {accountId}'s Balance: {balance}")
+            else:
+                print(f"No account found with ID {accountId}")
+              
+    except Exception as e:
+        print(f"Error viewing account balance for {accountId}: {e}")
+
+
+
 
 def viewRecentTransactions():
     """
     read the last N transactions for an account, ordered by timestamp descending.
     """
 
-def closeAccount():
+def closeAccount(conn, accountId, customerId):
     """
     change status to closed or frozen. Do not delete rows. You want an audit trail.
     """
+    try:
+        print()
+        sql = "UPDATE status FROM accounts WHERE account_id"
+    except Exception as e:
+        print(f"Error closing account {accountId}: {e}")
 
 
 ############## BANK FUNCTIONS ############## 
@@ -206,13 +345,16 @@ def main():
     
     #Testing connection 
     if conn is not None: 
-        loadData(conn)     
-        conn.close()       
+
+        # loadData(conn)   
+        getBalance(conn, 10000001)  
+        
+        
+        
+        conn.close()    
     else:
         print("Failed to connect to the database.")
     
-
-
 main()
 
 ############## DEVELOPMENT EFFORTS ##############
