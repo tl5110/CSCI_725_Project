@@ -1,6 +1,11 @@
 import json
 from datetime import datetime, UTC
 from pymongo import MongoClient
+from pymongo.read_concern import ReadConcern
+from pymongo.write_concern import WriteConcern
+
+WRITE_CONCERN = WriteConcern("majority", wtimeout=10000)
+READ_CONCERN = ReadConcern("snapshot")
 
 # -------------------------------------------------------------------------------------------------
 # Creation and Loading
@@ -99,6 +104,62 @@ def createBankingCollections(db):
         }
     })
 
+    createBankingIndexes(db)
+
+
+def createBankingIndexes(db):
+    """
+    Creates indexes needed for banking operations and analysis.
+
+    ::param db:: active database object
+    """
+    db.Transactions.create_index(
+        [('transfer_id', 1)],
+        name='transfer_id_lookup',
+        partialFilterExpression={'transfer_id': {'$type': 'int'}}
+    )
+
+    db.Transactions.create_index(
+        [('account_id', 1), ('timestamp', -1)],
+        name='account_recent_history'
+    )
+
+    db.Accounts.create_index(
+        [('customer_id', 1)],
+        name='customer_lookup'
+    )
+
+
+def getNextId(collection, session=None):
+    """
+    Computes the next integer _id for a collection by looking at the current max.
+
+    ::param collection:: pymongo collection
+    ::param session:: optional active session
+    """
+    latest = collection.find_one({}, sort=[('_id', -1)], projection={'_id': 1}, session=session)
+    if latest and '_id' in latest:
+        return latest['_id'] + 1
+    return 1
+
+
+def getNextTransferId(db, session=None):
+    """
+    Generates the next transfer_id value by inspecting existing transfer rows.
+
+    ::param db:: active database object
+    ::param session:: optional active session
+    """
+    latest = db.Transactions.find_one(
+        {'transfer_id': {'$type': 'int'}},
+        sort=[('transfer_id', -1)],
+        projection={'transfer_id': 1},
+        session=session
+    )
+    if latest and 'transfer_id' in latest:
+        return latest['transfer_id'] + 1
+    return 1
+
 
 def loadSampleData(db, folderDir):
     """
@@ -189,135 +250,161 @@ def loadSampleData(db, folderDir):
 # -------------------------------------------------------------------------------------------------
 
 
-def openAccount(db, accountId=None):
+def openAccount(db, accountId=None, logOutput=True):
     """
     Opens a new account for a customer for a random customer from
     the Customers collection. Or reopens an existing account if accountId is provided.
     
     ::param db:: active database object
+    ::param accountId:: optional account ID to reopen
+    ::param logOutput:: print status messages when True
     """
     try:
-        # Reopen existing closed account
-        if accountId:
-            account = db.Accounts.find_one({'_id': accountId, 'status': 'closed'})
-            if account:
-                db.Accounts.update_one({'_id': accountId}, {'$set': {'status': 'open', 'update_date': datetime.now(UTC)}})
-                print(f"Account reopened successfully: {accountId}")
-                return
-            else:
-                print(f"No closed account found for account ID {accountId}.")
-                return
+        with db.client.start_session() as session:
+            with session.start_transaction(read_concern=READ_CONCERN, write_concern=WRITE_CONCERN):
+                if accountId:
+                    account = db.Accounts.find_one({'_id': accountId, 'status': 'closed'}, session=session)
+                    if account:
+                        db.Accounts.update_one(
+                            {'_id': accountId},
+                            {'$set': {'status': 'open', 'update_date': datetime.now(UTC)}},
+                            session=session
+                        )
+                        if logOutput:
+                            print(f"Account reopened successfully: {accountId}")
+                        return True
+                    else:
+                        if logOutput:
+                            print(f"No closed account found for account ID {accountId}.")
+                        return False
 
-        # Open new account
-        customer = db.Customers.aggregate([{'$sample': {'size': 1}}]).next()
-        newAccountId = db.Accounts.estimated_document_count() + 1
-        accountInfo = {
-            '_id': newAccountId,
-            'customer_id': customer['_id'],
-            'balance': 0,
-            'overdraft_limit': 0,
-            'status': 'open',
-            'creation_date': datetime.now(UTC),
-            'update_date': datetime.now(UTC)
-        }
-        db.Accounts.insert_one(accountInfo)
-        print(f"Account opened successfully: {accountInfo}")
-    
+                customer = db.Customers.aggregate([{'$sample': {'size': 1}}], session=session).next()
+                newAccountId = getNextId(db.Accounts, session=session)
+                accountInfo = {
+                    '_id': newAccountId,
+                    'customer_id': customer['_id'],
+                    'balance': 0,
+                    'overdraft_limit': 0,
+                    'status': 'open',
+                    'creation_date': datetime.now(UTC),
+                    'update_date': datetime.now(UTC)
+                }
+                db.Accounts.insert_one(accountInfo, session=session)
+
+        if logOutput:
+            print(f"Account opened successfully: {accountInfo}")
+        return True
     except Exception as e:
-        print(f"Error opening account: {e}")
+        if logOutput:
+            print(f"Error opening account: {e}")
+        return False
 
 
-def deposit(db, accountId, amount):
+def deposit(db, accountId, amount, logOutput=True):
     """
     Deposits amount into a customer's account and creates a transaction record.
 
     ::param db:: active database object
     ::param accountId:: the ID of the account to deposit into
     ::param amount:: the amount to deposit
+    ::param logOutput:: print status messages when True
     """
     try:
         if amount <= 0:
-            print("Deposit amount must be positive.")
-            return
-        
-        # Finding/verifying customer's active account
-        account = db.Accounts.find_one({'_id': accountId, 'status': 'open'})
-        if not account:
-            print(f"No active account found for account ID {accountId}.")
-            return
-        
-        # Updating account balance
-        db.Accounts.update_one({'_id': account['_id']}, {'$inc': {'balance': amount}})
-        
-        # Generating transaction
-        newTransactionId = db.Transactions.estimated_document_count() + 1
-        transactionInfo = {
-            '_id': newTransactionId,
-            'account_id': account['_id'],
-            'timestamp': datetime.now(UTC),
-            'amount': amount,
-            'type': 'deposit',
-            'transfer_id': None,
-            'channel': 'online',
-            'merchant_id': None,
-            'note': 'deposit'
-        }
-        db.Transactions.insert_one(transactionInfo)
-        print(f"Deposit successful: \n{transactionInfo}")
+            if logOutput:
+                print("Deposit amount must be positive.")
+            return False
+
+        with db.client.start_session() as session:
+            with session.start_transaction(read_concern=READ_CONCERN, write_concern=WRITE_CONCERN):
+                account = db.Accounts.find_one({'_id': accountId, 'status': 'open'}, session=session)
+                if not account:
+                    if logOutput:
+                        print(f"No active account found for account ID {accountId}.")
+                    return False
+
+                db.Accounts.update_one({'_id': account['_id']}, {'$inc': {'balance': amount}}, session=session)
+
+                newTransactionId = getNextId(db.Transactions, session=session)
+                transactionInfo = {
+                    '_id': newTransactionId,
+                    'account_id': account['_id'],
+                    'timestamp': datetime.now(UTC),
+                    'amount': amount,
+                    'type': 'deposit',
+                    'transfer_id': None,
+                    'channel': 'online',
+                    'merchant_id': None,
+                    'note': 'deposit'
+                }
+                db.Transactions.insert_one(transactionInfo, session=session)
+
+        if logOutput:
+            print(f"Deposit successful: \n{transactionInfo}")
+        return True
 
     except Exception as e:
-        print(f"Error depositing money: {e}")
+        if logOutput:
+            print(f"Error depositing money: {e}")
+        return False
 
 
 
-def withdraw(db, accountId, amount):
+def withdraw(db, accountId, amount, logOutput=True):
     """
     Withdraws amount from a customer's account, creating a transaction record.
 
     ::param db:: active database object
     ::param accountId:: the ID of the account to withdraw from
     ::param amount:: the amount to withdraw
+    ::param logOutput:: print status messages when True
     """
     try:
         if amount <= 0:
-            print("Withdrawal amount must be positive.")
-            return
+            if logOutput:
+                print("Withdrawal amount must be positive.")
+            return False
 
-        # Finding/verifying customer's active account
-        account = db.Accounts.find_one({'_id': accountId, 'status': 'open'})
-        if not account:
-            print(f"No active account found for account ID {accountId}.")
-            return
+        with db.client.start_session() as session:
+            with session.start_transaction(read_concern=READ_CONCERN, write_concern=WRITE_CONCERN):
+                account = db.Accounts.find_one({'_id': accountId, 'status': 'open'}, session=session)
+                if not account:
+                    if logOutput:
+                        print(f"No active account found for account ID {accountId}.")
+                    return False
 
-        # Checking sufficient balance
-        if account['balance'] < amount:
-            print(f"Insufficient funds in account ID {accountId}.")
-            return
+                if account['balance'] < amount:
+                    if logOutput:
+                        print(f"Insufficient funds in account ID {accountId}.")
+                    return False
 
-        # Updating account balance
-        db.Accounts.update_one({'_id': account['_id']}, {'$inc': {'balance': -amount}})
+                db.Accounts.update_one({'_id': account['_id']}, {'$inc': {'balance': -amount}}, session=session)
 
-        # Generating transaction
-        newTransactionId = db.Transactions.estimated_document_count() + 1
-        transactionInfo = {
-            '_id': newTransactionId,
-            'account_id': account['_id'],
-            'timestamp': datetime.now(UTC),
-            'amount': amount,
-            'type': 'withdraw',
-            'transfer_id': None,
-            'channel': 'online',
-            'merchant_id': None,
-            'note': 'withdraw'
-        }
-        db.Transactions.insert_one(transactionInfo)
-        print(f"Withdrawal successful: \n{transactionInfo}")
+                newTransactionId = getNextId(db.Transactions, session=session)
+                transactionInfo = {
+                    '_id': newTransactionId,
+                    'account_id': account['_id'],
+                    'timestamp': datetime.now(UTC),
+                    'amount': amount,
+                    'type': 'withdraw',
+                    'transfer_id': None,
+                    'channel': 'online',
+                    'merchant_id': None,
+                    'note': 'withdraw'
+                }
+                db.Transactions.insert_one(transactionInfo, session=session)
+
+        if logOutput:
+            print(f"Withdrawal successful: \n{transactionInfo}")
+        return True
 
     except Exception as e:
-        print(f"Error withdrawing money: {e}")
+        if logOutput:
+            print(f"Error withdrawing money: {e}")
+        return False
 
 
-def transfer(db, fromAccId, toAccId, amount, merchantId=None, note=None, channel='online'):
+def transfer(db, fromAccId, toAccId, amount, merchantId=None, note=None, channel='online', logOutput=True):
     """
     Transfers amount from one account to another account, creating paired transactions.
     Can optionally include merchant information for merchant-related transfers.
@@ -335,138 +422,159 @@ def transfer(db, fromAccId, toAccId, amount, merchantId=None, note=None, channel
     ::param merchantId:: optional merchant ID if this is a merchant payment
     ::param note:: optional note for the transaction (e.g., 'rent', 'groceries', 'refund')
     ::param channel:: transaction channel (default 'online', can be 'pos', 'atm', 'branch')
+    ::param logOutput:: print status messages when True
     """
     try:
         if amount <= 0:
-            print("Transfer amount must be positive.")
-            return
-        
-        # Finding/verifying both accounts
-        fromAcc = db.Accounts.find_one({'_id': fromAccId, 'status': 'open'})
-        toAcc = db.Accounts.find_one({'_id': toAccId, 'status': 'open'})
-        
-        if not fromAcc:
-            print(f"No active account found for account ID {fromAccId}.")
-            return
-        if not toAcc:
-            print(f"No active account found for account ID {toAccId}.")
-            return 
-        if fromAcc['balance'] < amount:
-            print(f"Insufficient funds in account ID {fromAccId}.")
-            return
-        
-        # If merchant is specified, verify it exists
-        if merchantId:
-            merchant = db.Merchants.find_one({'_id': merchantId})
-            if not merchant:
-                print(f"No merchant found with ID {merchantId}.")
-                return
-            # Use merchant category as note if note not provided
-            if not note:
-                note = merchant['category']
-        
-        # Updating account balances
-        db.Accounts.update_one({'_id': fromAcc['_id']}, {'$inc': {'balance': -amount}})
-        db.Accounts.update_one({'_id': toAcc['_id']}, {'$inc': {'balance': amount}})
+            if logOutput:
+                print("Transfer amount must be positive.")
+            return False
 
-        # Generate unique transfer_id and transaction IDs
-        transferId = db.Transactions.estimated_document_count() + 100
-        newTransactionId01 = db.Transactions.estimated_document_count() + 1
-        newTransactionId02 = newTransactionId01 + 1
-        
-        # Creating paired transaction records with shared transfer_id
-        # BOTH transactions get the same merchant_id (if provided)
-        transactionInfo01 = {
-            '_id': newTransactionId01,
-            'account_id': fromAcc['_id'],
-            'timestamp': datetime.now(UTC),
-            'amount': -amount,
-            'type': 'transfer_debit',
-            'transfer_id': transferId,
-            'channel': channel,
-            'merchant_id': merchantId,
-            'note': note
-        }   
-        transactionInfo02 = {
-            '_id': newTransactionId02,
-            'account_id': toAcc['_id'],
-            'timestamp': datetime.now(UTC),
-            'amount': amount,
-            'type': 'transfer_credit',
-            'transfer_id': transferId,
-            'channel': channel,
-            'merchant_id': merchantId,
-            'note': note
-        }
-        db.Transactions.insert_one(transactionInfo01)
-        db.Transactions.insert_one(transactionInfo02)
-        
+        with db.client.start_session() as session:
+            with session.start_transaction(read_concern=READ_CONCERN, write_concern=WRITE_CONCERN):
+                fromAcc = db.Accounts.find_one({'_id': fromAccId, 'status': 'open'}, session=session)
+                toAcc = db.Accounts.find_one({'_id': toAccId, 'status': 'open'}, session=session)
+
+                if not fromAcc:
+                    if logOutput:
+                        print(f"No active account found for account ID {fromAccId}.")
+                    return False
+                if not toAcc:
+                    if logOutput:
+                        print(f"No active account found for account ID {toAccId}.")
+                    return False
+                if fromAcc['balance'] < amount:
+                    if logOutput:
+                        print(f"Insufficient funds in account ID {fromAccId}.")
+                    return False
+
+                if merchantId:
+                    merchant = db.Merchants.find_one({'_id': merchantId}, session=session)
+                    if not merchant:
+                        if logOutput:
+                            print(f"No merchant found with ID {merchantId}.")
+                        return False
+                    if not note:
+                        note = merchant['category']
+
+                db.Accounts.update_one({'_id': fromAcc['_id']}, {'$inc': {'balance': -amount}}, session=session)
+                db.Accounts.update_one({'_id': toAcc['_id']}, {'$inc': {'balance': amount}}, session=session)
+
+                transferId = getNextTransferId(db, session=session)
+                newTransactionId01 = getNextId(db.Transactions, session=session)
+
+                transactionInfo01 = {
+                    '_id': newTransactionId01,
+                    'account_id': fromAcc['_id'],
+                    'timestamp': datetime.now(UTC),
+                    'amount': -amount,
+                    'type': 'transfer_debit',
+                    'transfer_id': transferId,
+                    'channel': channel,
+                    'merchant_id': merchantId,
+                    'note': note
+                }   
+
+                db.Transactions.insert_one(transactionInfo01, session=session)
+
+                newTransactionId02 = getNextId(db.Transactions, session=session)
+                transactionInfo02 = {
+                    '_id': newTransactionId02,
+                    'account_id': toAcc['_id'],
+                    'timestamp': datetime.now(UTC),
+                    'amount': amount,
+                    'type': 'transfer_credit',
+                    'transfer_id': transferId,
+                    'channel': channel,
+                    'merchant_id': merchantId,
+                    'note': note
+                }
+                db.Transactions.insert_one(transactionInfo02, session=session)
+
         if merchantId:
-            print(f"Transfer successful (merchant payment): \n{transactionInfo01}\n{transactionInfo02}")
+            if logOutput:
+                print(f"Transfer successful (merchant payment): \n{transactionInfo01}\n{transactionInfo02}")
         else:
-            print(f"Transfer successful: \n{transactionInfo01}\n{transactionInfo02}")
+            if logOutput:
+                print(f"Transfer successful: \n{transactionInfo01}\n{transactionInfo02}")
+        return True
 
     except Exception as e:
-        print(f"Error transferring money: {e}")
+        if logOutput:
+            print(f"Error transferring money: {e}")
+        return False
 
 
-def getBalance(db, accountId, customerId):
+def getBalance(db, accountId, customerId, logOutput=True):
     """
     Retrieves the account balance for a given customer.
 
     ::param db:: active database object
     ::param accountId:: the _id of the account to retrieve the balance for
     ::param customerId:: the customer_id of the account owner
+    ::param logOutput:: print status messages when True
     """
     try:
         account = db.Accounts.find_one({'_id': accountId, 'customer_id': customerId})
         if account:
-            print(f"Account ID {accountId}'s Balance: {account['balance']}")
+            if logOutput:
+                print(f"Account ID {accountId}'s Balance: {account['balance']}")
+            return account['balance']
         else:
-            print(f"No active account found for account ID {accountId} and customer ID {customerId}.")
+            if logOutput:
+                print(f"No active account found for account ID {accountId} and customer ID {customerId}.")
+            return None
     
     except Exception as e:
-        print(f"Error retrieving balance: {e}")
+        if logOutput:
+            print(f"Error retrieving balance: {e}")
+        return None
 
 
 
 
-def viewRecentTransactions(db, accountId):
+def viewRecentTransactions(db, accountId, logOutput=True):
     """
     Retrieves recent transactions for a given account.
 
     ::param db:: active database object
     ::param accountId:: the _id of the account to retrieve transactions for
+    ::param logOutput:: print status messages when True
     """
     try:
         transactions = list(db.Transactions.find({'account_id': accountId}).sort('timestamp', -1).limit(10))
         
         if not transactions:
-            print(f"\n=== No transactions found for Account ID {accountId} ===\n")
-            return
+            if logOutput:
+                print(f"\n=== No transactions found for Account ID {accountId} ===\n")
+            return []
 
-        print(f"\n{'-'*110}")
-        print(f"Recent Transactions for Account ID {accountId}")
-        print(f"{'-'*110}")
-        print(f"{'ID':<12} {'Amount':<12} {'Type':<18} {'Timestamp':<27} {'Note':<20} {'Channel':<10}")
-        print(f"{'-'*110}")
+        if logOutput:
+            print(f"\n{'-'*110}")
+            print(f"Recent Transactions for Account ID {accountId}")
+            print(f"{'-'*110}")
+            print(f"{'ID':<12} {'Amount':<12} {'Type':<18} {'Timestamp':<27} {'Note':<20} {'Channel':<10}")
+            print(f"{'-'*110}")
         
-        for txn in transactions:
-            transferId = txn['_id']
-            amount = f"${txn['amount']/100:,.2f}" if txn.get('amount') is not None else '$0.00'
-            timestamp = txn['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if txn.get('timestamp') else 'N/A'
-            type = txn.get('type') or 'N/A'
-            note = str(txn.get('note')) if txn.get('note') is not None else 'N/A'
-            channel = txn.get('channel') or 'N/A'
+            for txn in transactions:
+                transferId = txn['_id']
+                amount = f"${txn['amount']/100:,.2f}" if txn.get('amount') is not None else '$0.00'
+                timestamp = txn['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if txn.get('timestamp') else 'N/A'
+                type = txn.get('type') or 'N/A'
+                note = str(txn.get('note')) if txn.get('note') is not None else 'N/A'
+                channel = txn.get('channel') or 'N/A'
 
-            print(f"{transferId:<12} {amount:<12} {type:<18} {timestamp:<27} {note:<20} {channel:<10}")
+                print(f"{transferId:<12} {amount:<12} {type:<18} {timestamp:<27} {note:<20} {channel:<10}")
 
-        print(f"{'-'*110}\n")
+            print(f"{'-'*110}\n")
 
+        return transactions
     except Exception as e:
-        print(f"Error retrieving recent transactions: {e}")
-        import traceback
-        traceback.print_exc()
+        if logOutput:
+            print(f"Error retrieving recent transactions: {e}")
+            import traceback
+            traceback.print_exc()
+        return []
 
 
 
@@ -598,23 +706,23 @@ def verifyData(db):
 
 
 
-def main():
-    db, client = connectToMongoDB()
+# def main():
+    # db, client = connectToMongoDB()
 
-    # Setup (uncomment to reset and reload data)
+    # # Setup (uncomment to reset and reload data)
     # dropBankingCollections(db)
     # createBankingCollections(db)
     # loadSampleData(db, 'baseline')
 
 
-    # Applications
+    # # Applications
     # openAccount(db)
     # deposit(db, accountId=10000000, amount=100)
     # withdraw(db, accountId=10000003, amount=11000)
     
-    # non-merchant
+    # # non-merchant
     # transfer(db, fromAccId=10000006, toAccId=10000003, amount=5000)
-    # merchant
+    # # merchant
     # transfer(db, fromAccId=10000007, toAccId=10000008, amount=5000, merchantId=1003, note='rent', channel='online')
     
 
@@ -634,22 +742,22 @@ def main():
     # openAccount(db, accountId=10000003)
 
 
-    # View recently added accounts
+    # # View recently added accounts
     # listRecentAccounts(db, limit=5)
     
-    # Verify data was loaded successfully
+    # # Verify data was loaded successfully
     # verifyData(db)
     
-    # Run query examples
-    # queryExamples(db)
+    # # Run query examples
+    # # queryExamples(db)
 
-    # Delete a specific account by ID
+    # # Delete a specific account by ID
     # deleteAccount(db, 10001)
     
-    # Delete all accounts with ID >= 10001 (all newly added test accounts)
+    # # Delete all accounts with ID >= 10001 (all newly added test accounts)
     # deleteNewAccounts(db, 10001)
 
-    client.close()
+    # client.close()
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
