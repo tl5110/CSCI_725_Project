@@ -37,13 +37,26 @@ def connectToDB():
 # -------------------------
 # Read Data + Load Data
 # -------------------------
+def verifyAccountExists(cur, account_id):
+    cur.execute("SELECT account_id FROM accounts WHERE account_id = %s", (account_id,))
+    return cur.fetchone() is not None 
+
+def verifyExist(conn,customer_id):
+    try: 
+        with conn.cursor() as cur:
+            balance_check = "SELECT account_id FROM accounts WHERE customer_id = %s"
+            cur.execute(balance_check,(customer_id,)) 
+            customer = cur.fetchone()
+            if customer  != None: 
+                return customer[0]
+            else: 
+                return False
+    except Exception as e:
+        print(f"Error Getting balance {customer_id}: {e}")
 
 def loadData(conn):
-    """
-    Read in the data
-    """
-   
-    #CUSTOMER file
+
+
     customer_files = {
         "banking_datasets/baseline/baseline_customers.csv",
         "banking_datasets/edgecases/edgecases_customers.csv",
@@ -69,10 +82,9 @@ def loadData(conn):
                 cur.execute(sql, (customer_id,name,email,phone_number,creation))
         
         conn.commit()
-        print("customer data loaded")
+        print("Customer data loaded.")
 
 
-    #MERCHANT - read in the merchant files and load them into the db 
     merchant_files = {
         "banking_datasets/baseline/baseline_merchants.csv",
         "banking_datasets/edgecases/edgecases_merchants.csv",
@@ -96,10 +108,9 @@ def loadData(conn):
                 cur.execute(sql, (merchant_id, name, category))
         
         conn.commit()
-        print("Merchant data loaded")
+        print("Merchant data loaded.")
 
 
-    # # #Account files 
     account_files = {
         "banking_datasets/baseline/baseline_accounts.csv",
         "banking_datasets/edgecases/edgecases_accounts.csv",
@@ -110,6 +121,7 @@ def loadData(conn):
     with conn.cursor() as cur:
         for file in account_files: 
             read = pd.read_csv(file,skiprows=1,usecols=[0,1,2,3,4,5,6])
+
             for row in read.itertuples(index=False): 
                 account_id = row[0]
                 customer_id= row[1]
@@ -118,6 +130,10 @@ def loadData(conn):
                 status = row[4]
                 open_at = row[5]
                 update = row[6]
+
+                if verifyExist(conn, customer_id) ==  False: 
+                    #print("customer doesnt exist")
+                    continue
                 try: 
                     sql = """
                             INSERT INTO accounts (account_id, customer_id,balance, overdraft_limit, status,creation_date, update_date)
@@ -125,146 +141,113 @@ def loadData(conn):
                         """
                     cur.execute(sql, (account_id,customer_id,balance,overdraft,status, open_at,update))
                 except Exception as e:
-                    print("ERROR:", e)
                     conn.rollback()
-                    continue
+                    print("Account load error:", e)
         conn.commit()
-        print("account data loaded")
-
+        print("Account data loaded.")
 
     transaction_files = {
-    "banking_datasets/baseline/baseline_transactions.csv",
-    "banking_datasets/edgecases/edgecases_transactions.csv",
-    "banking_datasets/hotspot/hotspot_transactions.csv",
-    "banking_datasets/payday/payday_transactions.csv",
+        "banking_datasets/baseline/baseline_transactions.csv",
+        "banking_datasets/edgecases/edgecases_transactions.csv",
+        "banking_datasets/hotspot/hotspot_transactions.csv",
+        "banking_datasets/payday/payday_transactions.csv",
     }
 
     with conn.cursor() as cur:
         for file in transaction_files:
-            read = pd.read_csv(file, skiprows=1, usecols=range(9))
+            df = pd.read_csv(file, skiprows=1, usecols=range(9))
 
-        
-            for row in read.itertuples(index=False):
+
+            for row in df.itertuples(index=False):
                 txn_id      = row[0]
                 account_id  = row[1]
-                time_stamp  = row[2]
+                ts          = row[2]
                 amount      = row[3]
                 type        = row[4]
-                transfer_id = int(row[5]) if not pd.isna(row[5]) else None
-                channel     = row[6] if not pd.isna(row[6]) else None
-                merchant_id = int(row[7]) if not pd.isna(row[7]) else None
-                note        = row[8] if not pd.isna(row[8]) else None
+                transfer_id = None if pd.isna(row[5]) else int(row[5])
+                channel     = None if pd.isna(row[6]) else row[6]
+                merchant_id = None if pd.isna(row[7]) else int(row[7])
+                note        = None if pd.isna(row[8]) else row[8]
+
+                if not verifyAccountExists(cur, account_id):
+                    #print(f"Skipping txn {txn_id}: account_id {account_id} does not exist.")
+                    continue
 
                 try:
-                    sql_insert = """
-                        INSERT INTO transactions 
-                            (txn_id, account_id, timestamp, amount, type,
-                            transfer_id, channel, merchant_id, note)
+                    cur.execute("""
+                        INSERT INTO transactions
+                        (txn_id, account_id, timestamp, amount, type, transfer_id, channel, merchant_id, note)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (txn_id) DO NOTHING;
-                    """
-                    cur.execute(sql_insert, (
-                        txn_id, account_id, time_stamp, amount, type,
-                        transfer_id, channel, merchant_id, note
-                    ))
-                except ForeignKeyViolation as e: 
-                    
-                    if 'transactions_merchant_id_fkey' in str(e): 
-                        print(f"Skipping transaction {txn_id}: merchant_id {merchant_id} missing") 
-                        conn.rollback() # rollback failed statement 
-                        continue
-                    else: raise 
+                    """,
+                    (txn_id, account_id, ts, amount, type, transfer_id, channel, merchant_id, note))
+
+                except Exception as e:
+                    conn.rollback()
+                    print(f"Skipping txn {txn_id}: {e}")
+                    continue
 
         conn.commit()
-        print("transaction data loaded")
+        print("Transaction data loaded.")
+
+     
+    
+def createTables(conn):
+
+    with conn.cursor() as cur:
 
 
-
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                customer_id     INTEGER PRIMARY KEY,
+                name            VARCHAR,
+                email           VARCHAR,
+                phone_number    VARCHAR,
+                creation_date   VARCHAR
+            );
+        """)
         
     
-
-def createTables(conn): 
-    """
-    Creates collections for banking application in the database
-    """
-    customer_table_sql = """
-                create table customers
-                (
-                    customer_id   integer not null primary key,
-                    name          varchar,
-                    email         varchar,
-                    phone_number  varchar,
-                    creation_date varchar
-                );
-            """
-    with conn.cursor() as cur:
-        cur.execute(customer_table_sql)
-        conn.commit()
-        print("CUSTOMER table created successfully!")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS merchants (
+                merchant_id INTEGER PRIMARY KEY,
+                name        VARCHAR,
+                category    VARCHAR
+            );
+        """)
 
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                account_id      INT PRIMARY KEY,
+                customer_id     INT NOT NULL REFERENCES customers(customer_id),
+                balance         INT NOT NULL,
+                overdraft_limit INT DEFAULT 0,
+                status          VARCHAR NOT NULL,
+                creation_date   TIMESTAMP,
+                update_date     TIMESTAMP
+            );
+        """)
 
-    # #Create the MERCHANT Table 
+        #BIGINT BECAUSE LOADING FROM PRE-EXITING ID'S
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                txn_id        BIGINT PRIMARY KEY,     
+                account_id    INT REFERENCES accounts(account_id),
+                timestamp     TIMESTAMP NOT NULL DEFAULT NOW(),
+                amount        INT NOT NULL,          
+                type          VARCHAR(30) NOT NULL
+                            CHECK (type IN ('deposit','withdrawal','transfer_debit','transfer_credit')),
+                transfer_id   BIGINT,   
+                channel       VARCHAR(50),
+                merchant_id   INT REFERENCES merchants(merchant_id),
+                note          TEXT  
+            );
 
-    merchant_table_sql = """
-                create table merchants
-                (
-                    merchant_id integer not null primary key,
-                    name        varchar,
-                    category    varchar
-                );
-            """
-    with conn.cursor() as cur:
-        cur.execute(merchant_table_sql)
-        conn.commit()
-        print("MERCHANT table created successfully!")
+        """)
 
-    account_table_sql = """
-                create table accounts (
-                    account_id INT,
-                    customer_id INT,
-                    balance INT NOT NULL,
-                    overdraft_limit INT DEFAULT 0,
-                    status VARCHAR NOT NULL,
-                    creation_date TIMESTAMP,
-                    update_date TIMESTAMP,
-                    PRIMARY KEY (account_id, customer_id),
-                    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
-                );
-            """
-    
-    with conn.cursor() as cur:
-        cur.execute(account_table_sql)
-        conn.commit()
-        print("accounts table created successfully!")
-
-
-
-    # #Create the Transaction Table
-    create_table_sql = """
-        CREATE TABLE IF NOT EXISTS transactions (
-            txn_id            BIGSERIAL PRIMARY KEY,
-            account_id     INT NOT NULL,
-            timestamp      TIMESTAMP,
-            amount         INT NOT NULL,
-            type           VARCHAR(30) NOT NULL,
-            transfer_id    INT,
-            channel        VARCHAR(50),
-            merchant_id    INT REFERENCES merchants(merchant_id),
-            note           TEXT
-        );
-    """
-   
-    try:
-        with conn.cursor() as cur:
-            cur.execute(create_table_sql)
-        conn.commit()
-        print("transactions table created successfully!")
-    except Exception as e:
-        conn.rollback()
-        print("Error creating transactions table:", e)
-
-
+    conn.commit()
+    print("Tables created successfully.")
 
 
 
@@ -277,54 +260,37 @@ def dropTables(conn):
         # Drop tables that depend on others first
         tables = [
             "transactions",
-            # "accounts"
-            # "merchants",
-            # "customers"
+            "accounts",
+            "merchants",
+            "customers"
         ]
 
         for table in tables:
             sql = f"DROP TABLE IF EXISTS {table} CASCADE;" #Cascade drops depend. 
-            cur.execute(sql)
-            
+            cur.execute(sql)    
 
     conn.commit()
     print("All tables dropped")
 
 def reset_transaction_sequence(conn):
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT setval(
-                    pg_get_serial_sequence('transactions', 'txn_id'),
-                    (SELECT MAX(txn_id) FROM transactions)
-                );
-            """)
-        conn.commit()
-        print("Sequence reset successfully.")
-    except Exception as e:
-        print(f"Error resetting sequence: {e}")
+    """
+    Aligns the internal sequence with the max txn_id from CSV + inserted ops.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT setval(
+                pg_get_serial_sequence('transactions', 'txn_id'),
+                COALESCE((SELECT MAX(txn_id) FROM transactions), 1)
+            );
+        """)
+    conn.commit()
+    print("Transaction sequence reset to max(txn_id).")
+
 
 
 # -------------------------
 # Bank Functions
 # -------------------------
-
-#Verified small test 
-def verifyExist(conn,customer_id):
-    """
-    verify if there already exists a bank account with this customer
-    """
-    try: 
-        with conn.cursor() as cur:
-            balance_check = "SELECT account_id FROM accounts WHERE customer_id = %s"
-            cur.execute(balance_check,(customer_id,)) 
-            customer = cur.fetchone()
-            if customer  != None: 
-                return customer[0]
-            else: 
-                return False
-    except Exception as e:
-        print(f"Error Getting balance {customer_id}: {e}")
 
 
 
@@ -800,197 +766,6 @@ def test_transfer_to_active_merchant(conn):
 
 
 
-# -------------------------
-# Performance Testing
-# -------------------------
-
-DB_PARAMS = {
-    "dbname": "CSCI_725_Project",
-    "host": "127.0.0.1",
-    "user": "root",
-    "password": "MYsql990001161"  
-}
-
-def new_conn():
-    return psql.connect(**DB_PARAMS)
-
-import random
-
-# ------------------------------------------------------------
-# TPS TEST (Random Accounts from DB)
-# ------------------------------------------------------------
-def transactPerSecond(operations_per_client=10):
-    """
-    Measure true TPS using per-thread connections.
-    No failed ops are counted.
-    """
-
-    concurrency_levels = [1, 5, 10, 20, 50]
-    results = {}
-
-    def perform_operations(_):
-        """Run Deposit + Withdraw + Transfer safely with random accounts from DB"""
-        successful_ops = 0
-
-        with new_conn() as conn:
-            cur = conn.cursor()
-            # Get all account_ids fresh for this connection
-            cur.execute("SELECT account_id FROM accounts")
-            accounts = [row[0] for row in cur.fetchall()]
-            if len(accounts) < 2:
-                raise ValueError("Need at least 2 accounts in the database.")
-
-            for _ in range(operations_per_client):
-                acc_from, acc_to = random.sample(accounts, 2)  # pick 2 distinct accounts
-
-                # ---- Deposit ----
-                try:
-                    Deposit(conn, acc_from, 100)
-                    successful_ops += 1
-                except Exception:
-                    conn.rollback()
-
-                # ---- Withdraw ----
-                try:
-                    Withdraw(conn, acc_from, 50)
-                    successful_ops += 1
-                except Exception:
-                    conn.rollback()
-
-                # ---- Transfer ----
-                try:
-                    Transfer(conn, acc_from, acc_to, 25)
-                    successful_ops += 1
-                except Exception:
-                    conn.rollback()
-
-        return successful_ops
-
-    for concurrency in concurrency_levels:
-        start = time.time()
-
-        with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            ops_count = sum(executor.map(perform_operations, range(concurrency)))
-
-        end = time.time()
-
-        tps = ops_count / (end - start)
-        results[concurrency] = tps
-        print(f"[TPS] Concurrency {concurrency}: {tps:.2f} TPS")
-
-    return results
-
-
-# ------------------------------------------------------------
-# LATENCY TEST (Random Accounts from DB)
-# ------------------------------------------------------------
-def latency(operations_per_client=10):
-    """
-    Measure latency per operation using random accounts directly from DB.
-    """
-
-    concurrency_levels = [1, 5, 10, 20, 50]
-    results = {}
-
-    def perform_operations(_):
-        timings = {"Deposit": [], "Withdraw": [], "Transfer": []}
-
-        with new_conn() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT account_id FROM accounts")
-            accounts = [row[0] for row in cur.fetchall()]
-            if len(accounts) < 2:
-                raise ValueError("Need at least 2 accounts in the database.")
-
-            for _ in range(operations_per_client):
-                acc_from, acc_to = random.sample(accounts, 2)
-
-                # ---- Deposit ----
-                t0 = time.perf_counter()
-                try:
-                    Deposit(conn, acc_from, 100)
-                    timings["Deposit"].append((time.perf_counter() - t0) * 1000)
-                except Exception:
-                    conn.rollback()
-
-                # ---- Withdraw ----
-                t0 = time.perf_counter()
-                try:
-                    Withdraw(conn, acc_from, 50)
-                    timings["Withdraw"].append((time.perf_counter() - t0) * 1000)
-                except Exception:
-                    conn.rollback()
-
-                # ---- Transfer ----
-                t0 = time.perf_counter()
-                try:
-                    Transfer(conn, acc_from, acc_to, 25)
-                    timings["Transfer"].append((time.perf_counter() - t0) * 1000)
-                except Exception:
-                    conn.rollback()
-
-        return timings
-
-    for concurrency in concurrency_levels:
-        all_times = {"Deposit": [], "Withdraw": [], "Transfer": []}
-
-        with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            for client_times in executor.map(perform_operations, range(concurrency)):
-                for op, times in client_times.items():
-                    all_times[op].extend(times)
-
-        avg_latency = {
-            op: (sum(times) / len(times)) if times else 0
-            for op, times in all_times.items()
-        }
-
-        results[concurrency] = avg_latency
-        print(f"[LATENCY] Concurrency {concurrency}: {avg_latency}")
-
-    return results
-
-
-# ------------------------------------------------------------
-# PLOTTING (Corrected)
-# ------------------------------------------------------------
-def plot_performance(latency_results, tps_results):
-    concurrency_levels = sorted(latency_results.keys())
-    operations = ["Deposit", "Withdraw", "Transfer"]
-
-    # -----------------------------
-    # Concurrency vs Latency Graph
-    # -----------------------------
-    plt.figure(figsize=(10, 5))
-
-    for op in operations:
-        latencies = [latency_results[c][op] for c in concurrency_levels]
-        plt.plot(concurrency_levels, latencies, marker='o', label=op)
-
-    plt.xlabel("Concurrency (clients)")
-    plt.ylabel("Latency (ms)")
-    plt.title("Concurrency vs Latency for Banking Operations")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-    # -----------------------------
-    # Concurrency vs TPS Graph
-    # -----------------------------
-    plt.figure(figsize=(10, 5))
-    tps_vals = [tps_results[c] for c in sorted(tps_results.keys())]
-
-    plt.plot(sorted(tps_results.keys()), tps_vals, marker='o')
-    plt.xlabel("Concurrency (clients)")
-    plt.ylabel("Transactions Per Second (TPS)")
-    plt.title("Concurrency vs TPS for Banking Operations")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-
-
-
 
 # -------------------------
 # Main
@@ -1003,9 +778,13 @@ def main():
     if conn is not None: 
         
         #Create + Initialize db 
-        # dropTables(conn)
-        # createTables(conn)
-        # loadData(conn) 
+        print("Dropping Tables ...")
+        dropTables(conn)
+        print("Creating Tables ...")
+        createTables(conn)
+        print("Loading Data ...")
+        loadData(conn) 
+
 
         # TEST Bank Operaations - USER: 1005010 #
         # testCustomer,accId = setup_test_customer(conn,20,200000001)
@@ -1023,9 +802,6 @@ def main():
 
         # TEST PERFORMANCE #
         # reset_transaction_sequence(conn) #CALL/UNCOMMENT AFTER LOADING DATA
-        tsp = transactPerSecond(10)
-        lat = latency(10)
-        plot_performance(lat,tsp)
 
         conn.close()    
     else:
