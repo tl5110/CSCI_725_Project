@@ -190,8 +190,503 @@ def loadData(conn):
         conn.commit()
         print("Transaction data loaded.")
 
-     
+
+def loadBaseline(conn):
+
+    customer_files = {
+        "banking_datasets/baseline/baseline_customers.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in customer_files: 
+            read = pd.read_csv(file,skiprows=1,usecols=[0,1,2,3,4])
+            for row in read.itertuples(index=False): 
+                customer_id = row[0]
+                name = row[1]
+                email = row[2]
+                phone_number = row[3]
+                creation = row[4]
+
+                sql = """
+                    INSERT INTO customers (customer_id,name, email, phone_number, creation_date )
+                    VALUES (%s, %s, %s,%s,%s)
+                    ON CONFLICT (customer_id) DO NOTHING;
+                """
+                cur.execute(sql, (customer_id,name,email,phone_number,creation))
+
+        conn.commit()
+        print("Baseline customers loaded.")
+
+
+    merchant_files = {
+        "banking_datasets/baseline/baseline_merchants.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in merchant_files: 
+            read = pd.read_csv(file,skiprows=1,usecols=[0,1,2])
+            for row in read.itertuples(index=False): 
+                merchant_id = row[0]
+                name = row[1]
+                category = row[2]
+
+                sql = """
+                    INSERT INTO merchants (merchant_id, name, category)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (merchant_id) DO NOTHING;
+                """
+                cur.execute(sql, (merchant_id, name, category))
+
+        conn.commit()
+        print("Baseline merchants loaded.")
+
+
+    account_files = {
+        "banking_datasets/baseline/baseline_accounts.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in account_files: 
+            read = pd.read_csv(file,skiprows=1,usecols=[0,1,2,3,4,5,6])
+
+            for row in read.itertuples(index=False): 
+                account_id = row[0]
+                customer_id= row[1]
+                balance = row[2]
+                overdraft = row[3]
+                status = row[4]
+                open_at = row[5]
+                update = row[6]
+
+                if verifyExist(conn, customer_id) == False:
+                    continue
+
+                try: 
+                    sql = """
+                        INSERT INTO accounts (account_id, customer_id,balance, overdraft_limit, status,creation_date, update_date)
+                        VALUES (%s, %s, %s,%s,%s,%s,%s)
+                    """
+                    cur.execute(sql, (account_id,customer_id,balance,overdraft,status, open_at,update))
+                except Exception as e:
+                    conn.rollback()
+                    print("Account load error:", e)
+
+        conn.commit()
+        print("Baseline accounts loaded.")
+
+
+    transaction_files = {
+        "banking_datasets/baseline/baseline_transactions.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in transaction_files:
+            df = pd.read_csv(file, skiprows=1, usecols=range(9))
+
+            for row in df.itertuples(index=False):
+                txn_id      = row[0]
+                account_id  = row[1]
+                ts          = row[2]
+                amount      = row[3]
+                type        = row[4]
+                transfer_id = None if pd.isna(row[5]) else int(row[5])
+                channel     = None if pd.isna(row[6]) else row[6]
+                merchant_id = None if pd.isna(row[7]) else int(row[7])
+                note        = None if pd.isna(row[8]) else row[8]
+
+                if not verifyAccountExists(cur, account_id):
+                    continue
+
+                try:
+                    cur.execute("""
+                        INSERT INTO transactions
+                        (txn_id, account_id, timestamp, amount, type, transfer_id, channel, merchant_id, note)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (txn_id) DO NOTHING;
+                    """,
+                    (txn_id, account_id, ts, amount, type, transfer_id, channel, merchant_id, note))
+
+                except Exception as e:
+                    conn.rollback()
+                    print(f"Skipping txn {txn_id}: {e}")
+
+        conn.commit()
+        print("Baseline transactions loaded.")
     
+
+def loadEdgecases(conn):
+
+    # ---------------- Customers ----------------
+    customer_files = {
+        "banking_datasets/edgecases/edgecases_customers.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in customer_files: 
+            read = pd.read_csv(file, skiprows=1, usecols=[0,1,2,3,4])
+            for row in read.itertuples(index=False): 
+                customer_id = row[0]
+                name        = row[1]
+                email       = row[2]
+                phone       = row[3]
+                creation    = row[4]
+
+                sql = """
+                    INSERT INTO customers (customer_id, name, email, phone_number, creation_date)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (customer_id) DO NOTHING;
+                """
+                cur.execute(sql, (customer_id, name, email, phone, creation))
+
+        conn.commit()
+        print("Edgecases customers loaded.")
+
+    # ---------------- Merchants ----------------
+    merchant_files = {
+        "banking_datasets/edgecases/edgecases_merchants.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in merchant_files:
+            read = pd.read_csv(file, skiprows=1, usecols=[0,1,2])
+            for row in read.itertuples(index=False):
+                merchant_id = row[0]
+                name        = row[1]
+                category    = row[2]
+
+                sql = """
+                    INSERT INTO merchants (merchant_id, name, category)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (merchant_id) DO NOTHING;
+                """
+                cur.execute(sql, (merchant_id, name, category))
+
+        conn.commit()
+        print("Edgecases merchants loaded.")
+
+    # ---------------- Accounts ----------------
+    account_files = {
+        "banking_datasets/edgecases/edgecases_accounts.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in account_files:
+            read = pd.read_csv(file, skiprows=1, usecols=[0,1,2,3,4,5,6])
+
+            for row in read.itertuples(index=False):
+                account_id = row[0]
+                customer_id= row[1]
+                balance    = row[2]
+                overdraft  = row[3]
+                status     = row[4]
+                open_at    = row[5]
+                update     = row[6]
+
+                if verifyExist(conn, customer_id) == False:
+                    continue
+
+                try:
+                    sql = """
+                        INSERT INTO accounts 
+                        (account_id, customer_id, balance, overdraft_limit, status, creation_date, update_date)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s);
+                    """
+                    cur.execute(sql, (account_id, customer_id, balance, overdraft, status, open_at, update))
+                except Exception as e:
+                    conn.rollback()
+                    print("Edgecases account load error:", e)
+
+        conn.commit()
+        print("Edgecases accounts loaded.")
+
+    # ---------------- Transactions ----------------
+    transaction_files = {
+        "banking_datasets/edgecases/edgecases_transactions.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in transaction_files:
+            df = pd.read_csv(file, skiprows=1, usecols=range(9))
+
+            for row in df.itertuples(index=False):
+                txn_id      = row[0]
+                account_id  = row[1]
+                ts          = row[2]
+                amount      = row[3]
+                type        = row[4]
+                transfer_id = None if pd.isna(row[5]) else int(row[5])
+                channel     = None if pd.isna(row[6]) else row[6]
+                merchant_id = None if pd.isna(row[7]) else int(row[7])
+                note        = None if pd.isna(row[8]) else row[8]
+
+                if not verifyAccountExists(cur, account_id):
+                    continue
+
+                try:
+                    cur.execute("""
+                        INSERT INTO transactions
+                        (txn_id, account_id, timestamp, amount, type, transfer_id, channel, merchant_id, note)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (txn_id) DO NOTHING;
+                    """, (txn_id, account_id, ts, amount, type, transfer_id, channel, merchant_id, note))
+
+                except Exception as e:
+                    conn.rollback()
+                    print(f"Skipping edgecases txn {txn_id}: {e}")
+
+        conn.commit()
+        print("Edgecases transactions loaded.")
+
+
+def loadHotspot(conn):
+
+    # ---------------- Customers ----------------
+    customer_files = {
+        "banking_datasets/hotspot/hotspot_customers.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in customer_files: 
+            read = pd.read_csv(file, skiprows=1, usecols=[0,1,2,3,4])
+            for row in read.itertuples(index=False): 
+                customer_id = row[0]
+                name        = row[1]
+                email       = row[2]
+                phone       = row[3]
+                creation    = row[4]
+
+                sql = """
+                    INSERT INTO customers (customer_id, name, email, phone_number, creation_date)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (customer_id) DO NOTHING;
+                """
+                cur.execute(sql, (customer_id, name, email, phone, creation))
+
+        conn.commit()
+        print("Hotspot customers loaded.")
+
+    # ---------------- Merchants ----------------
+    merchant_files = {
+        "banking_datasets/hotspot/hotspot_merchants.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in merchant_files:
+            read = pd.read_csv(file, skiprows=1, usecols=[0,1,2])
+            for row in read.itertuples(index=False):
+                merchant_id = row[0]
+                name        = row[1]
+                category    = row[2]
+
+                sql = """
+                    INSERT INTO merchants (merchant_id, name, category)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (merchant_id) DO NOTHING;
+                """
+                cur.execute(sql, (merchant_id, name, category))
+
+        conn.commit()
+        print("Hotspot merchants loaded.")
+
+    # ---------------- Accounts ----------------
+    account_files = {
+        "banking_datasets/hotspot/hotspot_accounts.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in account_files:
+            read = pd.read_csv(file, skiprows=1, usecols=[0,1,2,3,4,5,6])
+
+            for row in read.itertuples(index=False):
+                account_id = row[0]
+                customer_id= row[1]
+                balance    = row[2]
+                overdraft  = row[3]
+                status     = row[4]
+                open_at    = row[5]
+                update     = row[6]
+
+                if verifyExist(conn, customer_id) == False:
+                    continue
+
+                try:
+                    sql = """
+                        INSERT INTO accounts 
+                        (account_id, customer_id, balance, overdraft_limit, status, creation_date, update_date)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s);
+                    """
+                    cur.execute(sql, (account_id, customer_id, balance, overdraft, status, open_at, update))
+                except Exception as e:
+                    conn.rollback()
+                    print("Hotspot account load error:", e)
+
+        conn.commit()
+        print("Hotspot accounts loaded.")
+
+    # ---------------- Transactions ----------------
+    transaction_files = {
+        "banking_datasets/hotspot/hotspot_transactions.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in transaction_files:
+            df = pd.read_csv(file, skiprows=1, usecols=range(9))
+
+            for row in df.itertuples(index=False):
+                txn_id      = row[0]
+                account_id  = row[1]
+                ts          = row[2]
+                amount      = row[3]
+                type        = row[4]
+                transfer_id = None if pd.isna(row[5]) else int(row[5])
+                channel     = None if pd.isna(row[6]) else row[6]
+                merchant_id = None if pd.isna(row[7]) else int(row[7])
+                note        = None if pd.isna(row[8]) else row[8]
+
+                if not verifyAccountExists(cur, account_id):
+                    continue
+
+                try:
+                    cur.execute("""
+                        INSERT INTO transactions
+                        (txn_id, account_id, timestamp, amount, type, transfer_id, channel, merchant_id, note)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (txn_id) DO NOTHING;
+                    """, (txn_id, account_id, ts, amount, type, transfer_id, channel, merchant_id, note))
+
+                except Exception as e:
+                    conn.rollback()
+                    print(f"Skipping hotspot txn {txn_id}: {e}")
+
+        conn.commit()
+        print("Hotspot transactions loaded.")
+
+
+def loadPayday(conn):
+
+    # ---------------- Customers ----------------
+    customer_files = {
+        "banking_datasets/payday/payday_customers.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in customer_files: 
+            read = pd.read_csv(file, skiprows=1, usecols=[0,1,2,3,4])
+            for row in read.itertuples(index=False): 
+                customer_id = row[0]
+                name        = row[1]
+                email       = row[2]
+                phone       = row[3]
+                creation    = row[4]
+
+                sql = """
+                    INSERT INTO customers (customer_id, name, email, phone_number, creation_date)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (customer_id) DO NOTHING;
+                """
+                cur.execute(sql, (customer_id, name, email, phone, creation))
+
+        conn.commit()
+        print("Payday customers loaded.")
+
+    # ---------------- Merchants ----------------
+    merchant_files = {
+        "banking_datasets/payday/payday_merchants.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in merchant_files:
+            read = pd.read_csv(file, skiprows=1, usecols=[0,1,2])
+            for row in read.itertuples(index=False):
+                merchant_id = row[0]
+                name        = row[1]
+                category    = row[2]
+
+                sql = """
+                    INSERT INTO merchants (merchant_id, name, category)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (merchant_id) DO NOTHING;
+                """
+                cur.execute(sql, (merchant_id, name, category))
+
+        conn.commit()
+        print("Payday merchants loaded.")
+
+    # ---------------- Accounts ----------------
+    account_files = {
+        "banking_datasets/payday/payday_accounts.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in account_files:
+            read = pd.read_csv(file, skiprows=1, usecols=[0,1,2,3,4,5,6])
+
+            for row in read.itertuples(index=False):
+                account_id = row[0]
+                customer_id= row[1]
+                balance    = row[2]
+                overdraft  = row[3]
+                status     = row[4]
+                open_at    = row[5]
+                update     = row[6]
+
+                if verifyExist(conn, customer_id) == False:
+                    continue
+
+                try:
+                    sql = """
+                        INSERT INTO accounts 
+                        (account_id, customer_id, balance, overdraft_limit, status, creation_date, update_date)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s);
+                    """
+                    cur.execute(sql, (account_id, customer_id, balance, overdraft, status, open_at, update))
+                except Exception as e:
+                    conn.rollback()
+                    print("Payday account load error:", e)
+
+        conn.commit()
+        print("Payday accounts loaded.")
+
+    # ---------------- Transactions ----------------
+    transaction_files = {
+        "banking_datasets/payday/payday_transactions.csv",
+    }
+
+    with conn.cursor() as cur:
+        for file in transaction_files:
+            df = pd.read_csv(file, skiprows=1, usecols=range(9))
+
+            for row in df.itertuples(index=False):
+                txn_id      = row[0]
+                account_id  = row[1]
+                ts          = row[2]
+                amount      = row[3]
+                type        = row[4]
+                transfer_id = None if pd.isna(row[5]) else int(row[5])
+                channel     = None if pd.isna(row[6]) else row[6]
+                merchant_id = None if pd.isna(row[7]) else int(row[7])
+                note        = None if pd.isna(row[8]) else row[8]
+
+                if not verifyAccountExists(cur, account_id):
+                    continue
+
+                try:
+                    cur.execute("""
+                        INSERT INTO transactions
+                        (txn_id, account_id, timestamp, amount, type, transfer_id, channel, merchant_id, note)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (txn_id) DO NOTHING;
+                    """, (txn_id, account_id, ts, amount, type, transfer_id, channel, merchant_id, note))
+
+                except Exception as e:
+                    conn.rollback()
+                    print(f"Skipping payday txn {txn_id}: {e}")
+
+        conn.commit()
+        print("Payday transactions loaded.")
+
+
+   
 def createTables(conn):
 
     with conn.cursor() as cur:
